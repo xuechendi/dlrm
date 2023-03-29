@@ -1507,7 +1507,7 @@ def run(args):
                     )
                     should_test = (
                         (args.test_freq > 0)
-                        and (args.data_generation in ["dataset", "random"])
+                        and (args.data_generation in ["dataset", "random", "other"])
                         and (((j + 1) % args.test_freq == 0) or (j + 1 == nbatches))
                     )
 
@@ -1557,7 +1557,7 @@ def run(args):
                         # don't measure training iter time in a test iteration
                         if args.mlperf_logging:
                             previous_iteration_time = None
-                        print(
+                        sys.stdout.write(
                             "Testing at - {}/{} of epoch {},".format(j + 1, nbatches, k)
                         )
                         model_metrics_dict, is_best = inference(
