@@ -1913,7 +1913,8 @@ if __name__ == "__main__":
         valid_df.to_parquet(args.processed_data_file + "_test.parquet")
         print("generated processed data, pls take a look, " + args.processed_data_file + "_train.parquet, then rerun to continue")
         sys.exit()
+    args.labels = ['is_clicked', 'is_installed']
+    print(args)
     args.train_data = pd.read_parquet(args.processed_data_file + "_train.parquet")
     args.valid_data = pd.read_parquet(args.processed_data_file + "_test.parquet")
-    args.labels = ['is_clicked', 'is_installed']
     run(args)
