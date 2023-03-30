@@ -764,7 +764,7 @@ def inference(
     test_accu = 0
     test_samp = 0
 
-    if args.mlperf_logging:
+    if args.mlperf_logging or args.more_metrics:
         scores = []
         targets = []
 
@@ -800,7 +800,7 @@ def inference(
         if ext_dist.my_size > 1:
             Z_test = ext_dist.all_gather(Z_test, batch_split_lengths)
 
-        if args.mlperf_logging:
+        if args.mlperf_logging or args.more_metrics:
             S_test = Z_test.detach().cpu().numpy()  # numpy array
             T_test = T_test.detach().cpu().numpy()  # numpy array
             scores.append(S_test)
@@ -817,7 +817,7 @@ def inference(
                 test_accu += A_test
                 test_samp += mbs_test
 
-    if args.mlperf_logging:
+    if args.mlperf_logging or args.more_metrics:
         with record_function("DLRM mlperf sklearn metrics compute"):
             scores = np.concatenate(scores, axis=0)
             targets = np.concatenate(targets, axis=0)
@@ -860,7 +860,7 @@ def inference(
         "test_acc": acc_test,
     }
 
-    if args.mlperf_logging:
+    if args.mlperf_logging or args.more_metrics:
         is_best = validation_results["roc_auc"] > best_auc_test
         if is_best:
             best_auc_test = validation_results["roc_auc"]
@@ -881,6 +881,8 @@ def inference(
             ),
             flush=True,
         )
+        if validation_results["accuracy"] > best_acc_test:
+            best_acc_test = validation_results["accuracy"]
     else:
         is_best = acc_test > best_acc_test
         if is_best:
@@ -891,7 +893,7 @@ def inference(
             ),
             flush=True,
         )
-    return model_metrics_dict, is_best
+    return model_metrics_dict, is_best, best_auc_test, best_acc_test
 
 
 def run(args): 
@@ -1011,8 +1013,8 @@ def run(args):
         nbatches_test = len(test_ld)
 
     args.ln_emb = ln_emb.tolist()
-    if args.mlperf_logging:
-        print("command line args: ", json.dumps(vars(args)))
+    #if args.mlperf_logging:
+    #    print("command line args: ", json.dumps(vars(args)))
 
     ### parse command line arguments ###
     m_spa = args.arch_sparse_feature_size
@@ -1295,7 +1297,7 @@ def run(args):
         ld_nbatches_test = ld_model["nbatches_test"]
         ld_train_loss = ld_model["train_loss"]
         ld_total_loss = ld_model["total_loss"]
-        if args.mlperf_logging:
+        if args.mlperf_logging or args.more_metrics:
             ld_gAUC_test = ld_model["test_auc"]
         ld_acc_test = ld_model["test_acc"]
         if not args.inference_only:
@@ -1318,7 +1320,7 @@ def run(args):
                 ld_train_loss,
             )
         )
-        if args.mlperf_logging:
+        if args.mlperf_logging or args.more_metrics:
             print(
                 "Testing state: accuracy = {:3.3f} %, auc = {:.3f}".format(
                     ld_acc_test * 100, ld_gAUC_test
@@ -1560,7 +1562,7 @@ def run(args):
                         sys.stdout.write(
                             "Testing at - {}/{} of epoch {},".format(j + 1, nbatches, k)
                         )
-                        model_metrics_dict, is_best = inference(
+                        model_metrics_dict, is_best, best_auc_test, best_acc_test = inference(
                             args,
                             dlrm,
                             best_acc_test,
@@ -1825,7 +1827,7 @@ def dlrm_prepare_args():
     parser.add_argument("--data-trace-file", type=str, default="./input/dist_emb_j.log")
     parser.add_argument("--data-set", type=str, default="kaggle")  # or terabyte
     parser.add_argument("--raw-data-file", type=str, default="")
-    parser.add_argument("--processed-data-file", type=str, default="")
+    parser.add_argument("--processed-data-file", type=str, default="input/recsys2023")
     parser.add_argument("--data-randomize", type=str, default="total")  # or day or none
     parser.add_argument("--data-trace-enable-padding", type=bool, default=False)
     parser.add_argument("--max-ind-range", type=int, default=-1)
@@ -1879,6 +1881,7 @@ def dlrm_prepare_args():
     parser.add_argument("--load-model", type=str, default="")
     # mlperf logging (disables other output and stops early)
     parser.add_argument("--mlperf-logging", action="store_true", default=False)
+    parser.add_argument("--more-metrics", action="store_true", default=False)
     # stop at target accuracy Kaggle 0.789, Terabyte (sub-sampled=0.875) 0.8107
     parser.add_argument("--mlperf-acc-threshold", type=float, default=0.0)
     # stop at target AUC Terabyte (no subsampling) 0.8025
@@ -1891,19 +1894,26 @@ def dlrm_prepare_args():
     parser.add_argument("--lr-num-warmup-steps", type=int, default=0)
     parser.add_argument("--lr-decay-start-step", type=int, default=0)
     parser.add_argument("--lr-num-decay-steps", type=int, default=0)
+    parser.add_argument("--target-label", type=str, default="is_installed") 
     
     args = parser.parse_args()
     return args
 
 if __name__ == "__main__":
+    import os
+    import pandas as pd
     args = dlrm_prepare_args()
-    from recsys23.data_utils import load_csv_to_pandasdf
-    full_data = load_csv_to_pandasdf(args.data_set)
-    exclude = ['f_0', 'f_7']
-    train_df = full_data[full_data["f_1"] < 66].loc[:, ~full_data.columns.isin(exclude)]
-    valid_df = full_data[full_data["f_1"] == 66].loc[:, ~full_data.columns.isin(exclude)]
-    args.train_data = train_df
-    args.valid_data = valid_df
+    if not os.path.exists(args.processed_data_file + "_train.parquet"):
+        from recsys23.data_utils import load_csv_to_pandasdf
+        full_data = load_csv_to_pandasdf(args.data_set)
+        exclude = ['f_0', 'f_7']
+        train_df = full_data[full_data["f_1"] < 66].loc[:, ~full_data.columns.isin(exclude)]
+        valid_df = full_data[full_data["f_1"] == 66].loc[:, ~full_data.columns.isin(exclude)]
+        train_df.to_parquet(args.processed_data_file + "_train.parquet")
+        valid_df.to_parquet(args.processed_data_file + "_test.parquet")
+        print("generated processed data, pls take a look, " + args.processed_data_file + "_train.parquet, then rerun to continue")
+        sys.exit()
+    args.train_data = pd.read_parquet(args.processed_data_file + "_train.parquet")
+    args.valid_data = pd.read_parquet(args.processed_data_file + "_test.parquet")
     args.labels = ['is_clicked', 'is_installed']
-    args.target_label = 'is_installed'
     run(args)
