@@ -800,6 +800,17 @@ def inference(
         if ext_dist.my_size > 1:
             Z_test = ext_dist.all_gather(Z_test, batch_split_lengths)
 
+        if args.predict:
+            # save Z_test
+            from numpy import savetxt
+            save_path = os.path.dirname(args.save_model)
+            S_test = Z_test.detach().cpu().numpy()
+            with open(f'{save_path}/{args.target_label}_prediction.csv', "a") as f:
+                savetxt(f, S_test)
+            T_test_np = T_test.detach().cpu().numpy()
+            with open(f'{save_path}/{args.target_label}_ground_truth.csv', "a") as f:
+                savetxt(f, T_test_np)
+
         if args.mlperf_logging or args.more_metrics:
             S_test = Z_test.detach().cpu().numpy()  # numpy array
             T_test = T_test.detach().cpu().numpy()  # numpy array
@@ -1855,6 +1866,7 @@ def dlrm_prepare_args():
     )
     # inference
     parser.add_argument("--inference-only", action="store_true", default=False)
+    parser.add_argument("--predict", action="store_true", default=False)
     # quantize
     parser.add_argument("--quantize-mlp-with-bit", type=int, default=32)
     parser.add_argument("--quantize-emb-with-bit", type=int, default=32)
@@ -1902,9 +1914,9 @@ def dlrm_prepare_args():
 if __name__ == "__main__":
     import os
     import pandas as pd
+    from recsys23.data_utils import load_csv_to_pandasdf
     args = dlrm_prepare_args()
     if not os.path.exists(args.processed_data_file + "_train.parquet"):
-        from recsys23.data_utils import load_csv_to_pandasdf
         full_data = load_csv_to_pandasdf(args.data_set)
         exclude = ['f_0', 'f_7']
         train_df = full_data[full_data["f_1"] < 66].loc[:, ~full_data.columns.isin(exclude)]
@@ -1915,6 +1927,15 @@ if __name__ == "__main__":
         sys.exit()
     args.labels = ['is_clicked', 'is_installed']
     print(args)
-    args.train_data = pd.read_parquet(args.processed_data_file + "_train.parquet")
-    args.valid_data = pd.read_parquet(args.processed_data_file + "_test.parquet")
+    if args.predict and os.path.exists(args.data_set):
+        args.inference_only = True
+        args.train_data = pd.read_parquet(args.processed_data_file + "_train.parquet")
+        exclude = ['f_0', 'f_7']
+        valid_df = load_csv_to_pandasdf(args.data_set)
+        valid_df = valid_df.loc[:, ~valid_df.columns.isin(exclude)]
+        args.valid_data = valid_df
+
+    else:
+        args.train_data = pd.read_parquet(args.processed_data_file + "_train.parquet")
+        args.valid_data = pd.read_parquet(args.processed_data_file + "_test.parquet")
     run(args)
