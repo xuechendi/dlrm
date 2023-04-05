@@ -113,6 +113,7 @@ print(pathlib)
 sys.path.append(pathlib)
 
 exc = getattr(builtins, "IOError", "FileNotFoundError")
+from recsys23.utils import nce_score
 
 
 def time_wrap(use_gpu):
@@ -754,7 +755,7 @@ def dash_separated_floats(value):
 def inference(
     args,
     dlrm,
-    best_acc_test,
+    best_nce_test,
     best_auc_test,
     test_ld,
     device,
@@ -764,9 +765,8 @@ def inference(
     test_accu = 0
     test_samp = 0
 
-    if args.mlperf_logging or args.more_metrics:
-        scores = []
-        targets = []
+    scores = []
+    targets = []
 
     for i, testBatch in enumerate(test_ld):
         # early exit if nbatches was set by the user and was exceeded
@@ -827,6 +827,8 @@ def inference(
 
                 test_accu += A_test
                 test_samp += mbs_test
+                scores.append(S_test)
+                targets.append(T_test)
 
     if args.mlperf_logging or args.more_metrics:
         with record_function("DLRM mlperf sklearn metrics compute"):
@@ -848,6 +850,7 @@ def inference(
                 "accuracy": lambda y_true, y_score: sklearn.metrics.accuracy_score(
                     y_true=y_true, y_pred=np.round(y_score)
                 ),
+                "nce": lambda y_true, y_score: nce_score(y_true=y_true, y_pred = y_score)
             }
 
         validation_results = {}
@@ -858,26 +861,29 @@ def inference(
                 validation_results[metric_name],
                 log_iter,
             )
-        acc_test = validation_results["accuracy"]
+        nce_test = validation_results["nce"]
     else:
+        scores = np.concatenate(scores, axis=0)
+        targets = np.concatenate(targets, axis=0)
+        nce_test = nce_score(y_true = targets, y_pred = scores)
         acc_test = test_accu / test_samp
-        writer.add_scalar("Test/Acc", acc_test, log_iter)
+        writer.add_scalar("Test/NCE", nce_test, log_iter)
 
     model_metrics_dict = {
         "nepochs": args.nepochs,
         "nbatches": nbatches,
         "nbatches_test": nbatches_test,
         "state_dict": dlrm.state_dict(),
-        "test_acc": acc_test,
+        "test_nce": nce_test,
     }
 
     if args.mlperf_logging or args.more_metrics:
-        is_best = validation_results["roc_auc"] > best_auc_test
+        is_best = validation_results["nce"] < best_nce_test
         if is_best:
-            best_auc_test = validation_results["roc_auc"]
-            model_metrics_dict["test_auc"] = best_auc_test
+            best_nce_test = validation_results["nce"]
+            model_metrics_dict["test_nce"] = best_nce_test
         print(
-            "recall {:.4f}, precision {:.4f},".format(
+            " recall {:.4f}, precision {:.4f},".format(
                 validation_results["recall"],
                 validation_results["precision"],
             )
@@ -887,24 +893,27 @@ def inference(
             + " auc {:.4f}, best auc {:.4f},".format(
                 validation_results["roc_auc"], best_auc_test
             )
-            + " accuracy {:3.3f} %, best accuracy {:3.3f} %".format(
-                validation_results["accuracy"] * 100, best_acc_test * 100
+            + " accuracy {:.4f}, best nce {:.4f},".format(
+                validation_results["accuracy"], best_nce_test
+            )
+            + " nce {:.4f}".format(
+                validation_results["nce"]
             ),
             flush=True,
         )
-        if validation_results["accuracy"] > best_acc_test:
-            best_acc_test = validation_results["accuracy"]
+        if validation_results["roc_auc"] < best_auc_test:
+            best_auc_test = validation_results["roc_auc"]
     else:
-        is_best = acc_test > best_acc_test
+        is_best = nce_test < best_nce_test
         if is_best:
-            best_acc_test = acc_test
+            best_nce_test = nce_test
         print(
-            " accuracy {:3.3f} %, best {:3.3f} %".format(
-                acc_test * 100, best_acc_test * 100
+            " nce {:.4f} , best nce {:.4f}".format(
+                nce_test, best_nce_test
             ),
             flush=True,
         )
-    return model_metrics_dict, is_best, best_auc_test, best_acc_test
+    return model_metrics_dict, is_best, best_auc_test, best_nce_test
 
 
 def run(args): 
@@ -1262,7 +1271,7 @@ def run(args):
     ### main loop ###
 
     # training or inference
-    best_acc_test = 0
+    best_nce_test = 100
     best_auc_test = 0
     skip_upto_epoch = 0
     skip_upto_batch = 0
@@ -1310,10 +1319,10 @@ def run(args):
         ld_total_loss = ld_model["total_loss"]
         if args.mlperf_logging or args.more_metrics:
             ld_gAUC_test = ld_model["test_auc"]
-        ld_acc_test = ld_model["test_acc"]
+        ld_nce_test = ld_model["test_nce"]
         if not args.inference_only:
             optimizer.load_state_dict(ld_model["opt_state_dict"])
-            best_acc_test = ld_acc_test
+            best_nce_test = ld_nce_test
             total_loss = ld_total_loss
             skip_upto_epoch = ld_k  # epochs
             skip_upto_batch = ld_j  # batches
@@ -1573,10 +1582,10 @@ def run(args):
                         sys.stdout.write(
                             "Testing at - {}/{} of epoch {},".format(j + 1, nbatches, k)
                         )
-                        model_metrics_dict, is_best, best_auc_test, best_acc_test = inference(
+                        model_metrics_dict, is_best, best_auc_test, best_nce_test = inference(
                             args,
                             dlrm,
-                            best_acc_test,
+                            best_nce_test,
                             best_auc_test,
                             test_ld,
                             device,
@@ -1615,7 +1624,7 @@ def run(args):
                         if (
                             args.mlperf_logging
                             and (args.mlperf_acc_threshold > 0)
-                            and (best_acc_test > args.mlperf_acc_threshold)
+                            and (best_nce_test > args.mlperf_acc_threshold)
                         ):
                             print(
                                 "MLPerf testing accuracy threshold "
@@ -1669,7 +1678,7 @@ def run(args):
             inference(
                 args,
                 dlrm,
-                best_acc_test,
+                best_nce_test,
                 best_auc_test,
                 test_ld,
                 device,
