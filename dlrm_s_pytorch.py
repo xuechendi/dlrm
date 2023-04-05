@@ -122,7 +122,7 @@ def time_wrap(use_gpu):
     return time.time()
 
 
-def dlrm_wrap(X, lS_o, lS_i, use_gpu, device, ndevices=1):
+def dlrm_wrap(dlrm_local, X, lS_o, lS_i, use_gpu, device, ndevices=1):
     with record_function("DLRM forward"):
         if use_gpu:  # .cuda()
             # lS_i can be either a list of tensors or a stacked tensor.
@@ -138,7 +138,7 @@ def dlrm_wrap(X, lS_o, lS_i, use_gpu, device, ndevices=1):
                     if isinstance(lS_o, list)
                     else lS_o.to(device)
                 )
-        return dlrm(X.to(device), lS_o, lS_i)
+        return dlrm_local(X.to(device), lS_o, lS_i)
 
 
 def loss_fn_wrap(Z, T, use_gpu, device):
@@ -783,14 +783,28 @@ def inference(
             continue
 
         # forward pass
-        Z_test = dlrm_wrap(
-            X_test,
-            lS_o_test,
-            lS_i_test,
-            use_gpu,
-            device,
-            ndevices=ndevices,
-        )
+        if args.predict:
+            dlrm.eval()
+            with torch.no_grad():
+                Z_test = dlrm_wrap(
+                dlrm,
+                X_test,
+                lS_o_test,
+                lS_i_test,
+                use_gpu,
+                device,
+                ndevices=ndevices,
+                )
+        else:
+            Z_test = dlrm_wrap(
+                dlrm,
+                X_test,
+                lS_o_test,
+                lS_i_test,
+                use_gpu,
+                device,
+                ndevices=ndevices,
+            )
         ### gather the distributed results on each rank ###
         # For some reason it requires explicit sync before all_gather call if
         # tensor is on GPU memory
@@ -803,7 +817,7 @@ def inference(
         if args.predict:
             # save Z_test
             from numpy import savetxt
-            save_path = os.path.dirname(args.save_model)
+            save_path = os.path.dirname(args.load_model)
             S_test = Z_test.detach().cpu().numpy()
             with open(f'{save_path}/{args.target_label}_prediction.csv', "a") as f:
                 savetxt(f, S_test)
@@ -1318,7 +1332,7 @@ def run(args):
         ld_train_loss = ld_model["train_loss"]
         ld_total_loss = ld_model["total_loss"]
         if args.mlperf_logging or args.more_metrics:
-            ld_gAUC_test = ld_model["test_auc"]
+            ld_gNCE_test = ld_model["test_nce"]
         ld_nce_test = ld_model["test_nce"]
         if not args.inference_only:
             optimizer.load_state_dict(ld_model["opt_state_dict"])
@@ -1343,11 +1357,11 @@ def run(args):
         if args.mlperf_logging or args.more_metrics:
             print(
                 "Testing state: accuracy = {:3.3f} %, auc = {:.3f}".format(
-                    ld_acc_test * 100, ld_gAUC_test
+                    ld_nce_test * 100, ld_gNCE_test
                 )
             )
         else:
-            print("Testing state: accuracy = {:3.3f} %".format(ld_acc_test * 100))
+            print("Testing state: accuracy = {:3.3f} %".format(ld_nce_test * 100))
 
     if args.inference_only:
         # Currently only dynamic quantization with INT8 and FP16 weights are
@@ -1467,6 +1481,7 @@ def run(args):
 
                     # forward pass
                     Z = dlrm_wrap(
+                        dlrm,
                         X,
                         lS_o,
                         lS_i,
