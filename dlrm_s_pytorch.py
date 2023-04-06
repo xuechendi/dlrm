@@ -113,7 +113,7 @@ print(pathlib)
 sys.path.append(pathlib)
 
 exc = getattr(builtins, "IOError", "FileNotFoundError")
-from recsys23.utils import nce_score
+from recsys23.utils import nce_score, NCELoss
 
 
 def time_wrap(use_gpu):
@@ -143,7 +143,7 @@ def dlrm_wrap(dlrm_local, X, lS_o, lS_i, use_gpu, device, ndevices=1):
 
 def loss_fn_wrap(Z, T, use_gpu, device):
     with record_function("DLRM loss compute"):
-        if args.loss_function == "mse" or args.loss_function == "bce":
+        if args.loss_function == "mse" or args.loss_function == "bce" or args.loss_function == "nce":
             return dlrm.loss_fn(Z, T.to(device))
         elif args.loss_function == "wbce":
             loss_ws_ = dlrm.loss_ws[T.data.view(-1).long()].view_as(T).to(device)
@@ -380,6 +380,8 @@ class DLRM_Net(nn.Module):
                 self.loss_fn = torch.nn.MSELoss(reduction="mean")
             elif self.loss_function == "bce":
                 self.loss_fn = torch.nn.BCELoss(reduction="mean")
+            elif self.loss_function == "nce":
+                self.loss_fn = NCELoss()
             elif self.loss_function == "wbce":
                 self.loss_ws = torch.tensor(
                     np.fromstring(args.loss_weights, dtype=float, sep="-")
