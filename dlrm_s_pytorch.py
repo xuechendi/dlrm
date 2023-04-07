@@ -113,7 +113,7 @@ print(pathlib)
 sys.path.append(pathlib)
 
 exc = getattr(builtins, "IOError", "FileNotFoundError")
-from recsys23.utils import nce_score, NCELoss
+from recsys23.utils import nce_score, NCELoss, BCEWithLogitsLoss, CombinedAdam
 
 
 def time_wrap(use_gpu):
@@ -143,14 +143,13 @@ def dlrm_wrap(dlrm_local, X, lS_o, lS_i, use_gpu, device, ndevices=1):
 
 def loss_fn_wrap(Z, T, use_gpu, device):
     with record_function("DLRM loss compute"):
-        if args.loss_function == "mse" or args.loss_function == "bce" or args.loss_function == "nce":
-            return dlrm.loss_fn(Z, T.to(device))
-        elif args.loss_function == "wbce":
+        if args.loss_function == "wbce":
             loss_ws_ = dlrm.loss_ws[T.data.view(-1).long()].view_as(T).to(device)
             loss_fn_ = dlrm.loss_fn(Z, T.to(device))
             loss_sc_ = loss_ws_ * loss_fn_
             return loss_sc_.mean()
-
+        else:
+            return dlrm.loss_fn(Z, T.to(device))
 
 # The following function is a wrapper to avoid checking this multiple times in th
 # loop below.
@@ -380,6 +379,8 @@ class DLRM_Net(nn.Module):
                 self.loss_fn = torch.nn.MSELoss(reduction="mean")
             elif self.loss_function == "bce":
                 self.loss_fn = torch.nn.BCELoss(reduction="mean")
+            elif self.loss_function == "bceLogits":
+                self.loss_fn = BCEWithLogitsLoss()
             elif self.loss_function == "nce":
                 self.loss_fn = NCELoss()
             elif self.loss_function == "wbce":
@@ -816,11 +817,15 @@ def inference(
         if ext_dist.my_size > 1:
             Z_test = ext_dist.all_gather(Z_test, batch_split_lengths)
 
+        if args.loss_function.startswith("bceLogits"):
+            Z_test = Z_test * 2 - 1
+            Z_test = torch.sigmoid(Z_test)
+        S_test = Z_test.detach().cpu().numpy()  # numpy array
+        scores.append(S_test)
         if args.predict:
             # save Z_test
             from numpy import savetxt
             save_path = os.path.dirname(args.load_model)
-            S_test = Z_test.detach().cpu().numpy()
             with open(f'{save_path}/{args.target_label}_prediction.csv', "a") as f:
                 savetxt(f, S_test)
             T_test_np = T_test.detach().cpu().numpy()
@@ -828,14 +833,11 @@ def inference(
                 savetxt(f, T_test_np)
 
         if args.mlperf_logging or args.more_metrics:
-            S_test = Z_test.detach().cpu().numpy()  # numpy array
             T_test = T_test.detach().cpu().numpy()  # numpy array
-            scores.append(S_test)
             targets.append(T_test)
         else:
             with record_function("DLRM accuracy compute"):
                 # compute loss and accuracy
-                S_test = Z_test.detach().cpu().numpy()  # numpy array
                 T_test = T_test.detach().cpu().numpy()  # numpy array
 
                 mbs_test = T_test.shape[0]  # = mini_batch_size except last
@@ -843,7 +845,6 @@ def inference(
 
                 test_accu += A_test
                 test_samp += mbs_test
-                scores.append(S_test)
                 targets.append(T_test)
 
     if args.mlperf_logging or args.more_metrics:
@@ -1253,6 +1254,7 @@ def run(args):
             "sgd": torch.optim.SGD,
             "rwsadagrad": RowWiseSparseAdagrad.RWSAdagrad,
             "adagrad": torch.optim.Adagrad,
+            "adam": CombinedAdam,
         }
 
         parameters = (
@@ -1276,13 +1278,36 @@ def run(args):
                 },
             ]
         )
-        optimizer = opts[args.optimizer](parameters, lr=args.learning_rate)
-        lr_scheduler = LRPolicyScheduler(
-            optimizer,
-            args.lr_num_warmup_steps,
-            args.lr_decay_start_step,
-            args.lr_num_decay_steps,
-        )
+        if args.optimizer == 'adam':
+            parameters = ([
+                {
+                    "params": [p for emb in dlrm.emb_l for p in emb.parameters()],
+                    "lr": args.learning_rate,
+                },
+                # TODO check this lr setup
+                # bottom mlp has no data parallelism
+                # need to check how do we deal with top mlp
+                {
+                    "params": dlrm.bot_l.parameters(),
+                    "lr": args.learning_rate,
+                },
+                {
+                    "params": dlrm.top_l.parameters(),
+                    "lr": args.learning_rate,
+                },
+            ]
+            )
+        if args.optimizer == 'sgd':
+            optimizer = opts[args.optimizer](parameters, lr=args.learning_rate, momentum=args.momentum)
+        else:
+            optimizer = opts[args.optimizer](parameters, lr=args.learning_rate, weight_decay = args.weight_decay)
+        # lr_scheduler = LRPolicyScheduler(
+        #     optimizer,
+        #     args.lr_num_warmup_steps,
+        #     args.lr_decay_start_step,
+        #     args.lr_num_decay_steps,
+        # )
+        lr_scheduler = _LRScheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
     ### main loop ###
 
@@ -1877,6 +1902,8 @@ def dlrm_prepare_args():
     parser.add_argument("--mini-batch-size", type=int, default=1)
     parser.add_argument("--nepochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=0.01)
+    parser.add_argument("--momentum", type=float, default=0.9)
+    parser.add_argument("--weight-decay", type=float, default=0.0001)
     parser.add_argument("--print-precision", type=int, default=5)
     parser.add_argument("--numpy-rand-seed", type=int, default=123)
     parser.add_argument("--sync-dense-params", type=bool, default=True)
