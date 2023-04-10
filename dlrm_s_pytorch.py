@@ -115,6 +115,9 @@ sys.path.append(pathlib)
 exc = getattr(builtins, "IOError", "FileNotFoundError")
 from recsys23.utils import nce_score, NCELoss, BCEWithLogitsLoss, CombinedAdam, customBCELoss
 
+import os
+import pandas as pd
+
 
 def time_wrap(use_gpu):
     if use_gpu:
@@ -143,13 +146,7 @@ def dlrm_wrap(dlrm_local, X, lS_o, lS_i, use_gpu, device, ndevices=1):
 
 def loss_fn_wrap(Z, T, use_gpu, device):
     with record_function("DLRM loss compute"):
-        if args.loss_function == "wbce":
-            loss_ws_ = dlrm.loss_ws[T.data.view(-1).long()].view_as(T).to(device)
-            loss_fn_ = dlrm.loss_fn(Z, T.to(device))
-            loss_sc_ = loss_ws_ * loss_fn_
-            return loss_sc_.mean()
-        else:
-            return dlrm.loss_fn(Z, T.to(device))
+        return dlrm.loss_fn(Z, T.to(device))
 
 # The following function is a wrapper to avoid checking this multiple times in th
 # loop below.
@@ -306,6 +303,7 @@ class DLRM_Net(nn.Module):
         md_threshold=200,
         weighted_pooling=None,
         loss_function="bce",
+        args = None,
     ):
         super(DLRM_Net, self).__init__()
 
@@ -848,6 +846,10 @@ def inference(
                 test_samp += mbs_test
                 targets.append(T_test)
 
+    if args.predict:
+        print(f"prediction saved at {save_path}/{args.target_label}_prediction.csv")
+        return {}, False, 0, 0
+    
     if args.mlperf_logging or args.more_metrics:
         with record_function("DLRM mlperf sklearn metrics compute"):
             scores = np.concatenate(scores, axis=0)
@@ -1214,6 +1216,7 @@ def run(args):
         md_threshold=args.md_threshold,
         weighted_pooling=args.weighted_pooling,
         loss_function=args.loss_function,
+        args = args,
     )
 
     # test prints
@@ -1335,6 +1338,9 @@ def run(args):
     # Load model is specified
     if not (args.load_model == ""):
         print("Loading saved model {}".format(args.load_model))
+        save_path = os.path.dirname(args.load_model)
+        if os.path.exists(f'{save_path}/{args.target_label}_prediction.csv'):
+            os.remove(f'{save_path}/{args.target_label}_prediction.csv')
         if use_gpu:
             if dlrm.ndevices > 1:
                 # NOTE: when targeting inference on multiple GPUs,
@@ -1385,7 +1391,7 @@ def run(args):
         )
         if args.mlperf_logging or args.more_metrics:
             print(
-                "Testing state: accuracy = {:3.3f} %, auc = {:.3f}".format(
+                "Testing state: accuracy = {:3.3f} %, nce = {:.3f}".format(
                     ld_nce_test * 100, ld_gNCE_test
                 )
             )
@@ -1874,12 +1880,12 @@ def dlrm_prepare_args():
         "--loss-weights", type=dash_separated_floats, default="1.0-1.0"
     )  # for wbce
     parser.add_argument("--loss-threshold", type=float, default=0.0)  # 1.0e-7
-    parser.add_argument("--round-targets", type=bool, default=False)
+    parser.add_argument("--round-targets", type=bool, default=True)
     # data
     parser.add_argument("--data-size", type=int, default=1)
     parser.add_argument("--num-batches", type=int, default=0)
     parser.add_argument(
-        "--data-generation", type=str, default="random"
+        "--data-generation", type=str, default="other"
     )  # synthetic or dataset
     parser.add_argument(
         "--rand-data-dist", type=str, default="uniform"
@@ -1889,7 +1895,7 @@ def dlrm_prepare_args():
     parser.add_argument("--rand-data-mu", type=float, default=-1)
     parser.add_argument("--rand-data-sigma", type=float, default=1)
     parser.add_argument("--data-trace-file", type=str, default="./input/dist_emb_j.log")
-    parser.add_argument("--data-set", type=str, default="kaggle")  # or terabyte
+    parser.add_argument("--data-set", type=str, default="other")  # or terabyte
     parser.add_argument("--raw-data-file", type=str, default="")
     parser.add_argument("--processed-data-file", type=str, default="input/recsys2023")
     parser.add_argument("--data-randomize", type=str, default="total")  # or day or none
@@ -1934,11 +1940,11 @@ def dlrm_prepare_args():
     parser.add_argument("--local_rank", type=int, default=-1)
     parser.add_argument("--dist-backend", type=str, default="")
     # debugging and profiling
-    parser.add_argument("--print-freq", type=int, default=1)
-    parser.add_argument("--test-freq", type=int, default=-1)
-    parser.add_argument("--test-mini-batch-size", type=int, default=-1)
+    parser.add_argument("--print-freq", type=int, default=1024)
+    parser.add_argument("--test-freq", type=int, default=1024)
+    parser.add_argument("--test-mini-batch-size", type=int, default=16)
     parser.add_argument("--test-num-workers", type=int, default=-1)
-    parser.add_argument("--print-time", action="store_true", default=False)
+    parser.add_argument("--print-time", action="store_true", default=True)
     parser.add_argument("--print-wall-time", action="store_true", default=False)
     parser.add_argument("--debug-mode", action="store_true", default=False)
     parser.add_argument("--enable-profiling", action="store_true", default=False)
@@ -1949,7 +1955,7 @@ def dlrm_prepare_args():
     parser.add_argument("--load-model", type=str, default="")
     # mlperf logging (disables other output and stops early)
     parser.add_argument("--mlperf-logging", action="store_true", default=False)
-    parser.add_argument("--more-metrics", action="store_true", default=False)
+    parser.add_argument("--more-metrics", action="store_true", default=True)
     # stop at target accuracy Kaggle 0.789, Terabyte (sub-sampled=0.875) 0.8107
     parser.add_argument("--mlperf-acc-threshold", type=float, default=0.0)
     # stop at target AUC Terabyte (no subsampling) 0.8025
@@ -1964,12 +1970,10 @@ def dlrm_prepare_args():
     parser.add_argument("--lr-num-decay-steps", type=int, default=0)
     parser.add_argument("--target-label", type=str, default="is_installed") 
     
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
     return args
 
 if __name__ == "__main__":
-    import os
-    import pandas as pd
     from recsys23.data_utils import load_csv_to_pandasdf
     args = dlrm_prepare_args()
     if not os.path.exists(args.processed_data_file + "_train.parquet"):
