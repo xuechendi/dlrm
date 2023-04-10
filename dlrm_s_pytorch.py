@@ -113,7 +113,7 @@ print(pathlib)
 sys.path.append(pathlib)
 
 exc = getattr(builtins, "IOError", "FileNotFoundError")
-from recsys23.utils import nce_score, NCELoss, BCEWithLogitsLoss, CombinedAdam
+from recsys23.utils import nce_score, NCELoss, BCEWithLogitsLoss, CombinedAdam, customBCELoss
 
 
 def time_wrap(use_gpu):
@@ -378,11 +378,11 @@ class DLRM_Net(nn.Module):
             if self.loss_function == "mse":
                 self.loss_fn = torch.nn.MSELoss(reduction="mean")
             elif self.loss_function == "bce":
-                self.loss_fn = torch.nn.BCELoss(reduction="mean")
+                self.loss_fn = customBCELoss(pos_weight = args.pos_weight)
             elif self.loss_function == "bceLogits":
                 self.loss_fn = BCEWithLogitsLoss()
             elif self.loss_function == "nce":
-                self.loss_fn = NCELoss()
+                self.loss_fn = NCELoss(pos_weight = args.pos_weight)
             elif self.loss_function == "wbce":
                 self.loss_ws = torch.tensor(
                     np.fromstring(args.loss_weights, dtype=float, sep="-")
@@ -820,6 +820,7 @@ def inference(
         if args.loss_function.startswith("bceLogits"):
             Z_test = Z_test * 2 - 1
             Z_test = torch.sigmoid(Z_test)
+
         S_test = Z_test.detach().cpu().numpy()  # numpy array
         scores.append(S_test)
         if args.predict:
@@ -1298,16 +1299,17 @@ def run(args):
             ]
             )
         if args.optimizer == 'sgd':
-            optimizer = opts[args.optimizer](parameters, lr=args.learning_rate, momentum=args.momentum)
+            #optimizer = opts[args.optimizer](parameters, lr=args.learning_rate, momentum=args.momentum)
+            optimizer = opts[args.optimizer](parameters, lr=args.learning_rate)
         else:
             optimizer = opts[args.optimizer](parameters, lr=args.learning_rate, weight_decay = args.weight_decay)
-        # lr_scheduler = LRPolicyScheduler(
-        #     optimizer,
-        #     args.lr_num_warmup_steps,
-        #     args.lr_decay_start_step,
-        #     args.lr_num_decay_steps,
-        # )
-        lr_scheduler = _LRScheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+        lr_scheduler = LRPolicyScheduler(
+            optimizer,
+            args.lr_num_warmup_steps,
+            args.lr_decay_start_step,
+            args.lr_num_decay_steps,
+        )
+        #lr_scheduler = _LRScheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
     ### main loop ###
 
@@ -1904,6 +1906,7 @@ def dlrm_prepare_args():
     parser.add_argument("--learning-rate", type=float, default=0.01)
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=0.0001)
+    parser.add_argument("--pos-weight", type=float, default=None)
     parser.add_argument("--print-precision", type=int, default=5)
     parser.add_argument("--numpy-rand-seed", type=int, default=123)
     parser.add_argument("--sync-dense-params", type=bool, default=True)
