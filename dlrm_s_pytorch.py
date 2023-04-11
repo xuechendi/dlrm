@@ -768,11 +768,14 @@ def inference(
 
     scores = []
     targets = []
+    if not (args.load_model == ""):
+        save_path = os.path.dirname(args.load_model)
 
+    print(nbatches)
     for i, testBatch in enumerate(test_ld):
         # early exit if nbatches was set by the user and was exceeded
-        if nbatches > 0 and i >= nbatches:
-            break
+        # if nbatches > 0 and i >= nbatches:
+        #     break
 
         X_test, lS_o_test, lS_i_test, T_test, W_test, CBPP_test = unpack_batch(
             testBatch
@@ -824,7 +827,6 @@ def inference(
         if args.predict:
             # save Z_test
             from numpy import savetxt
-            save_path = os.path.dirname(args.load_model)
             with open(f'{save_path}/{args.target_label}_prediction.csv', "a") as f:
                 savetxt(f, S_test)
             T_test_np = T_test.detach().cpu().numpy()
@@ -1021,7 +1023,7 @@ def run(args):
         if args.data_set == "kaggle" or args.data_set == "terabyte":
             train_data, train_ld, test_data, test_ld = dp.make_criteo_data_and_loaders(args)
         else:
-            from recsys23.data_utils import make_data_loaders
+            from recsys23.dlrm_data_utils import make_data_loaders
             train_data, train_ld, test_data, test_ld = make_data_loaders(args)
         table_feature_map = {idx: idx for idx in range(len(train_data.counts))}
         nbatches = args.num_batches if args.num_batches > 0 else len(train_ld)
@@ -1955,7 +1957,7 @@ def dlrm_prepare_args():
     parser.add_argument("--load-model", type=str, default="")
     # mlperf logging (disables other output and stops early)
     parser.add_argument("--mlperf-logging", action="store_true", default=False)
-    parser.add_argument("--more-metrics", action="store_true", default=True)
+    parser.add_argument("--more-metrics", action="store_true", default=False)
     # stop at target accuracy Kaggle 0.789, Terabyte (sub-sampled=0.875) 0.8107
     parser.add_argument("--mlperf-acc-threshold", type=float, default=0.0)
     # stop at target AUC Terabyte (no subsampling) 0.8025
@@ -1974,28 +1976,43 @@ def dlrm_prepare_args():
     return args
 
 if __name__ == "__main__":
-    from recsys23.data_utils import load_csv_to_pandasdf
+    from recsys23.utils import load_csv_to_pandasdf, categorify
     args = dlrm_prepare_args()
-    if not os.path.exists(args.processed_data_file + "_train.parquet"):
-        full_data = load_csv_to_pandasdf(args.data_set)
-        exclude = ['f_0', 'f_7']
-        train_df = full_data[full_data["f_1"] < 66].loc[:, ~full_data.columns.isin(exclude)]
-        valid_df = full_data[full_data["f_1"] == 66].loc[:, ~full_data.columns.isin(exclude)]
-        train_df.to_parquet(args.processed_data_file + "_train.parquet")
-        valid_df.to_parquet(args.processed_data_file + "_test.parquet")
-        print("generated processed data, pls take a look, " + args.processed_data_file + "_train.parquet, then rerun to continue")
-        sys.exit()
-    args.labels = ['is_clicked', 'is_installed']
-    print(args)
-    if args.predict and os.path.exists(args.data_set):
-        args.inference_only = True
-        args.train_data = pd.read_parquet(args.processed_data_file + "_train.parquet")
-        exclude = ['f_0', 'f_7']
-        valid_df = load_csv_to_pandasdf(args.data_set)
-        valid_df = valid_df.loc[:, ~valid_df.columns.isin(exclude)]
-        args.valid_data = valid_df
-
+    data_path = args.data_set
+    if os.path.exists(os.path.join(data_path, "recsys2023_train.parquet")):
+        train_df_full = pd.read_parquet(os.path.join(data_path, "recsys2023_train.parquet"))
+        test_df = pd.read_parquet(os.path.join(data_path, "recsys2023_test.parquet"))
     else:
-        args.train_data = pd.read_parquet(args.processed_data_file + "_train.parquet")
-        args.valid_data = pd.read_parquet(args.processed_data_file + "_test.parquet")
+        train_df_full = load_csv_to_pandasdf(os.path.join(data_path, "train"))
+        test_df = load_csv_to_pandasdf(os.path.join(data_path, "test"))
+        train_df_full = train_df_full.sort_values(by=['f_1'])
+        train_df_full.to_parquet(os.path.join(data_path, "recsys2023_train.parquet"))
+        test_df.to_parquet(os.path.join(data_path, "recsys2023_test.parquet"))
+
+    # do categorify
+    from recsys23.utils import categorify
+    def categorify_with_cond(df, exclude_labels, label_encoders = None):
+        if label_encoders is None:
+            cat_df = df.loc[:, ~df.columns.isin(exclude_labels)].select_dtypes(int)
+        else:
+            cat_df = df.loc[:, df.columns.isin(label_encoders.keys())]
+        cat_df, label_encoders, emb_dim = categorify(cat_df)
+        for column in cat_df.columns:
+            s = cat_df[column]
+            del df[column]
+            df[column] = s
+        return df, label_encoders, emb_dim
+    label_cols = ['is_clicked', 'is_installed', 'f_0', 'f_64']
+    train_df, label_encoders, emb_dim = categorify_with_cond(train_df_full, label_cols)
+    print(emb_dim)
+
+    # only use days before 60 to do first phase training
+    train_df = train_df_full[train_df_full['f_1']<21]
+    valid_df = train_df_full[train_df_full['f_1']==21]
+
+    args.labels = ['is_clicked', 'is_installed']
+    args.train_data = train_df
+    args.valid_data = valid_df
+    args.emb_dim = emb_dim
+
     run(args)
