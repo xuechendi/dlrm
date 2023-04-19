@@ -1023,7 +1023,7 @@ def run(args):
         if args.data_set == "kaggle" or args.data_set == "terabyte":
             train_data, train_ld, test_data, test_ld = dp.make_criteo_data_and_loaders(args)
         else:
-            from recsys23.dlrm_data_utils import make_data_loaders
+            from dlrm_data_utils import make_data_loaders
             train_data, train_ld, test_data, test_ld = make_data_loaders(args)
         table_feature_map = {idx: idx for idx in range(len(train_data.counts))}
         nbatches = args.num_batches if args.num_batches > 0 else len(train_ld)
