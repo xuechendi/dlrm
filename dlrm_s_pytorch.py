@@ -113,7 +113,7 @@ print(pathlib)
 sys.path.append(pathlib)
 
 exc = getattr(builtins, "IOError", "FileNotFoundError")
-from recsys23.utils import nce_score, NCELoss, BCEWithLogitsLoss, CombinedAdam, customBCELoss
+from utils import nce_score, NCELoss, BCEWithLogitsLoss, CombinedAdam, customBCELoss
 
 import os
 import pandas as pd
@@ -1976,7 +1976,7 @@ def dlrm_prepare_args():
     return args
 
 if __name__ == "__main__":
-    from recsys23.utils import load_csv_to_pandasdf, categorify
+    from utils import load_csv_to_pandasdf, categorify
     args = dlrm_prepare_args()
     data_path = args.data_set
     if os.path.exists(os.path.join(data_path, "recsys2023_train.parquet")):
@@ -1990,7 +1990,7 @@ if __name__ == "__main__":
         test_df.to_parquet(os.path.join(data_path, "recsys2023_test.parquet"))
 
     # do categorify
-    from recsys23.utils import categorify
+    from utils import categorify
     def categorify_with_cond(df, exclude_labels, label_encoders = None):
         if label_encoders is None:
             cat_df = df.loc[:, ~df.columns.isin(exclude_labels)].select_dtypes(int)
