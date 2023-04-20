@@ -1579,11 +1579,11 @@ def run(args):
                     should_print = ((j + 1) % args.print_freq == 0) or (
                         j + 1 == nbatches
                     )
-                    should_test = (
+                    should_test = ((
                         (args.test_freq > 0)
                         and (args.data_generation in ["dataset", "random", "other"])
-                        and (((j + 1) % args.test_freq == 0) or (j + 1 == nbatches))
-                    )
+                        and ((j + 1) % args.test_freq == 0))
+                    or (j + 1 == nbatches))
 
                     # print time, loss and accuracy
                     if should_print or should_test:
