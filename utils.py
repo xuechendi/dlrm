@@ -56,15 +56,25 @@ def load_csv_to_pandasdf(dataset):
 
 def H(y, p):
     e = np.finfo(float).eps
+    return -y * torch.log(p + e) - (1 - y) * torch.log(1 - p + e)
+
+def H_np(y, p):
+    e = np.finfo(float).eps
     return -y * np.log(p + e) - (1 - y) * np.log(1 - p + e)
     
 def nce_score(y_true, y_pred, verbose = False):
     avg_logloss_y_p = np.mean(sklearn.metrics.log_loss(y_true, y_pred))
     #avg_log_reci_p = np.mean(np.log(1/y_pred))
     ctr = y_true.sum() / y_true.shape[0]
-    logloss_ctr = H(ctr, ctr)
-    if verbose:
-        print(f"avg_logloss_y_p is {avg_logloss_y_p}, y_true_num is {y_true.sum()}, y_total is {y_true.shape[0]}, logloss_ctr is {logloss_ctr}")
+    if not verbose:
+        try:
+            logloss_ctr = H(ctr, ctr)
+            return avg_logloss_y_p / logloss_ctr
+        except:
+            logloss_ctr = H_np(ctr, ctr)
+            return avg_logloss_y_p / logloss_ctr
+    logloss_ctr = H_np(ctr, ctr)
+    print(f"avg_logloss_y_p is {avg_logloss_y_p}, y_true_num is {y_true.sum()}, y_total is {y_true.shape[0]}, logloss_ctr is {logloss_ctr}")
     return avg_logloss_y_p / logloss_ctr
 
 class BCEWithLogitsLoss(torch.nn.BCEWithLogitsLoss):
