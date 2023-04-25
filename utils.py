@@ -147,7 +147,11 @@ def categorify(X_cat_df, label_encoders = None, inplace = False):
         for v, le in label_encoders.items():
             le_dict = dict((v, idx) for idx, v in enumerate(le.classes_))
             s = X_cat_df[v].apply(lambda x: le_dict.get(x, len(le.classes_)))
-            X_cat_df[f"{v}_cat"] = s
+            if inplace:
+                del X_cat_df[v]
+                X_cat_df[v] = s
+            else:
+                X_cat_df[f"{v}_cat"] = s
     
     return X_cat_df, label_encoders, emb_dim
 
