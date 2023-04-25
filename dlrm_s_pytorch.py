@@ -97,6 +97,8 @@ from tricks.md_embedding_bag import md_solver, PrEmbeddingBag
 # quotient-remainder trick
 from tricks.qr_embedding_bag import QREmbeddingBag
 
+from tqdm import tqdm
+
 with warnings.catch_warnings():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
     try:
@@ -1375,8 +1377,8 @@ def run(args):
             optimizer.load_state_dict(ld_model["opt_state_dict"])
             best_nce_test = ld_nce_test
             total_loss = ld_total_loss
-            skip_upto_epoch = ld_k  # epochs
-            skip_upto_batch = ld_j  # batches
+            #skip_upto_epoch = ld_k  # epochs
+            #skip_upto_batch = ld_j  # batches
         else:
             args.print_freq = ld_nbatches
             args.test_freq = 0
@@ -1579,11 +1581,11 @@ def run(args):
                     should_print = ((j + 1) % args.print_freq == 0) or (
                         j + 1 == nbatches
                     )
-                    should_test = ((
+                    should_test = (
                         (args.test_freq > 0)
                         and (args.data_generation in ["dataset", "random", "other"])
-                        and ((j + 1) % args.test_freq == 0))
-                    or (j + 1 == nbatches))
+                        and ((j + 1) % args.test_freq == 0)
+                    ) or (j + 1 == nbatches)
 
                     # print time, loss and accuracy
                     if should_print or should_test:
