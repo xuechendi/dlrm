@@ -1652,6 +1652,10 @@ def run(args):
                             and not (args.save_model == "")
                             and not args.inference_only
                         ):
+                            save_model_dir = '/'.join(args.save_model.split('/')[:-1])
+                            save_model_fn = args.save_model.split('/')[-1]
+                            save_model_fn = f"epoch{k}_{model_metrics_dict['test_nce']}_{save_model_fn}"
+                            save_model = os.path.join(save_model_dir, save_model_fn)
                             model_metrics_dict["epoch"] = k
                             model_metrics_dict["iter"] = j + 1
                             model_metrics_dict["train_loss"] = train_loss
@@ -1659,8 +1663,8 @@ def run(args):
                             model_metrics_dict[
                                 "opt_state_dict"
                             ] = optimizer.state_dict()
-                            print("Saving model to {}".format(args.save_model))
-                            torch.save(model_metrics_dict, args.save_model)
+                            print("Saving model to {}".format(save_model))
+                            torch.save(model_metrics_dict, save_model)
 
                         if args.mlperf_logging:
                             mlperf_logger.barrier()
