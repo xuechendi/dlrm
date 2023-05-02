@@ -1003,7 +1003,8 @@ def run(args):
             device = torch.device("cuda", ext_dist.my_local_rank)
         else:
             ngpus = torch.cuda.device_count()
-            device = torch.device("cuda", 0)
+            ngpus = 1
+            device = torch.device("cuda", 6)
         print("Using {} GPU(s)...".format(ngpus))
     else:
         device = torch.device("cpu")
@@ -1455,7 +1456,8 @@ def run(args):
 
     tb_file = "./" + args.tensor_board_filename
     writer = SummaryWriter(tb_file)
-
+    patient = 0
+    early_stop = False
     ext_dist.barrier()
     with torch.autograd.profiler.profile(
         args.enable_profiling, use_cuda=use_gpu, record_shapes=True
@@ -1463,7 +1465,7 @@ def run(args):
         if not args.inference_only:
             k = 0
             total_time_begin = 0
-            while k < args.nepochs:
+            while not early_stop and k < args.nepochs:
                 if args.mlperf_logging:
                     mlperf_logger.barrier()
                     mlperf_logger.log_start(
@@ -1647,6 +1649,15 @@ def run(args):
                             log_iter,
                         )
 
+                        if not is_best:
+                            patient += 1
+                        else:
+                            patient = 0
+                        
+                        if patient > 2:
+                            print('nce is not improving after two epochs, early stop')
+                            early_stop = True
+                            break
                         if (
                             is_best
                             and not (args.save_model == "")
@@ -1654,7 +1665,7 @@ def run(args):
                         ):
                             save_model_dir = '/'.join(args.save_model.split('/')[:-1])
                             save_model_fn = args.save_model.split('/')[-1]
-                            save_model_fn = f"epoch{k}_{model_metrics_dict['test_nce']}_{save_model_fn}"
+                            save_model_fn = f"epoch{k}_{save_model_fn}"
                             save_model = os.path.join(save_model_dir, save_model_fn)
                             model_metrics_dict["epoch"] = k
                             model_metrics_dict["iter"] = j + 1
