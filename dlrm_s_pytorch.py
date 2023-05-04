@@ -127,7 +127,7 @@ def time_wrap(use_gpu):
     return time.time()
 
 
-def dlrm_wrap(dlrm_local, X, lS_o, lS_i, use_gpu, device, ndevices=1):
+def dlrm_wrap(dlrm_local, X, lS_o, lS_i, use_gpu, device, ndevices=1, save_last_layer_logits = False):
     with record_function("DLRM forward"):
         if use_gpu:  # .cuda()
             # lS_i can be either a list of tensors or a stacked tensor.
@@ -143,7 +143,7 @@ def dlrm_wrap(dlrm_local, X, lS_o, lS_i, use_gpu, device, ndevices=1):
                     if isinstance(lS_o, list)
                     else lS_o.to(device)
                 )
-        return dlrm_local(X.to(device), lS_o, lS_i)
+        return dlrm_local(X.to(device), lS_o, lS_i, save_last_layer_logits)
 
 
 def loss_fn_wrap(Z, T, use_gpu, device):
@@ -513,18 +513,18 @@ class DLRM_Net(nn.Module):
 
         return R
 
-    def forward(self, dense_x, lS_o, lS_i):
+    def forward(self, dense_x, lS_o, lS_i, save_last_layer_logits = False):
         if ext_dist.my_size > 1:
             # multi-node multi-device run
-            return self.distributed_forward(dense_x, lS_o, lS_i)
+            return self.distributed_forward(dense_x, lS_o, lS_i), None
         elif self.ndevices <= 1:
             # single device run
-            return self.sequential_forward(dense_x, lS_o, lS_i)
+            return self.sequential_forward(dense_x, lS_o, lS_i, save_last_layer_logits)
         else:
             # single-node multi-device run
-            return self.parallel_forward(dense_x, lS_o, lS_i)
+            return self.parallel_forward(dense_x, lS_o, lS_i), None
 
-    def distributed_forward(self, dense_x, lS_o, lS_i):
+    def distributed_forward(self, dense_x, lS_o, lS_i, save_last_layer_logits = False):
         batch_size = dense_x.size()[0]
         # WARNING: # of ranks must be <= batch size in distributed_forward call
         if batch_size < ext_dist.my_size:
@@ -583,8 +583,9 @@ class DLRM_Net(nn.Module):
 
         return z
 
-    def sequential_forward(self, dense_x, lS_o, lS_i):
+    def sequential_forward(self, dense_x, lS_o, lS_i, save_last_layer_logits = False):
         # process dense features (using bottom mlp), resulting in a row vector
+        logits = None
         x = self.apply_mlp(dense_x, self.bot_l)
         # debug prints
         # print("intermediate")
@@ -597,6 +598,9 @@ class DLRM_Net(nn.Module):
 
         # interact features (dense and sparse)
         z = self.interact_features(x, ly)
+        if save_last_layer_logits:
+            logits = torch.cat([x] + ly, dim=1)
+        
         # print(z.detach().cpu().numpy())
 
         # obtain probability of a click (using top mlp)
@@ -608,9 +612,9 @@ class DLRM_Net(nn.Module):
         else:
             z = p
 
-        return z
+        return z, logits
 
-    def parallel_forward(self, dense_x, lS_o, lS_i):
+    def parallel_forward(self, dense_x, lS_o, lS_i, save_last_layer_logits = False):
         ### prepare model (overwrite) ###
         # WARNING: # of devices must be >= batch size in parallel_forward call
         batch_size = dense_x.size()[0]
@@ -774,7 +778,7 @@ def inference(
         save_path = os.path.dirname(args.load_model)
 
     print(nbatches)
-    for i, testBatch in enumerate(test_ld):
+    for i, testBatch in tqdm(enumerate(test_ld)):
         # early exit if nbatches was set by the user and was exceeded
         # if nbatches > 0 and i >= nbatches:
         #     break
@@ -792,7 +796,7 @@ def inference(
         if args.predict:
             dlrm.eval()
             with torch.no_grad():
-                Z_test = dlrm_wrap(
+                Z_test, emb_logits = dlrm_wrap(
                 dlrm,
                 X_test,
                 lS_o_test,
@@ -800,9 +804,15 @@ def inference(
                 use_gpu,
                 device,
                 ndevices=ndevices,
+                save_last_layer_logits = args.save_last_layer_logits
                 )
+            if args.save_last_layer_logits:
+                S_test = emb_logits.detach().cpu().numpy()
+                from numpy import savetxt
+                with open(f'{save_path}/{args.target_label}_logits.csv', "a") as f:
+                    savetxt(f, S_test)
         else:
-            Z_test = dlrm_wrap(
+            Z_test, _ = dlrm_wrap(
                 dlrm,
                 X_test,
                 lS_o_test,
@@ -1346,6 +1356,8 @@ def run(args):
         save_path = os.path.dirname(args.load_model)
         if os.path.exists(f'{save_path}/{args.target_label}_prediction.csv'):
             os.remove(f'{save_path}/{args.target_label}_prediction.csv')
+        if os.path.exists(f'{save_path}/{args.target_label}_logits.csv'):
+            os.remove(f'{save_path}/{args.target_label}_logits.csv')
         if use_gpu:
             if dlrm.ndevices > 1:
                 # NOTE: when targeting inference on multiple GPUs,
@@ -1521,7 +1533,7 @@ def run(args):
                     mbs = T.shape[0]  # = args.mini_batch_size except maybe for last
 
                     # forward pass
-                    Z = dlrm_wrap(
+                    Z, _ = dlrm_wrap(
                         dlrm,
                         X,
                         lS_o,
@@ -1981,6 +1993,7 @@ def dlrm_prepare_args():
     parser.add_argument("--mlperf-auc-threshold", type=float, default=0.0)
     parser.add_argument("--mlperf-bin-loader", action="store_true", default=False)
     parser.add_argument("--mlperf-bin-shuffle", action="store_true", default=False)
+    parser.add_argument("--save-last-layer-logits", action="store_true", default=False)
     # mlperf gradient accumulation iterations
     parser.add_argument("--mlperf-grad-accum-iter", type=int, default=1)
     # LR policy
