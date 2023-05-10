@@ -1012,10 +1012,14 @@ def run(args):
             ngpus = 1
             device = torch.device("cuda", ext_dist.my_local_rank)
         else:
-            ngpus = torch.cuda.device_count()
+            #ngpus = torch.cuda.device_count()
             ngpus = 1
-            device = torch.device("cuda", 6)
-        print("Using {} GPU(s)...".format(ngpus))
+            if 'CUDA_VISIBLE_DEVICES' in os.environ:
+                device_id = int(os.environ['CUDA_VISIBLE_DEVICES'])
+            else:
+                device_id = 0
+            device = torch.device("cuda", device_id)
+        print(f"pin device to GPU {device_id}")
     else:
         device = torch.device("cpu")
         print("Using CPU...")
@@ -1471,6 +1475,7 @@ def run(args):
     patient = 0
     early_stop = False
     ext_dist.barrier()
+    epoch_start_time = -1
     with torch.autograd.profiler.profile(
         args.enable_profiling, use_cuda=use_gpu, record_shapes=True
     ) as prof:
@@ -1478,6 +1483,10 @@ def run(args):
             k = 0
             total_time_begin = 0
             while not early_stop and k < args.nepochs:
+                if epoch_start_time != -1:
+                    c = time_wrap(use_gpu)
+                    print(f"Last epoch took total {c - epoch_start_time} secs")
+                epoch_start_time = time_wrap(use_gpu)
                 if args.mlperf_logging:
                     mlperf_logger.barrier()
                     mlperf_logger.log_start(
